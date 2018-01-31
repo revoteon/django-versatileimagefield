@@ -12,7 +12,7 @@ from django.contrib.auth.models import User
 from django.core import serializers
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.core.files import File
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.urlresolvers import reverse
 from django.template.loader import get_template
@@ -24,7 +24,6 @@ from django.utils.six.moves import cPickle
 from PIL import Image
 from rest_framework.test import APIRequestFactory
 
-from versatileimagefield.files import VersatileImageFileDescriptor
 from versatileimagefield.datastructures.base import ProcessedImage
 from versatileimagefield.datastructures.filteredimage import InvalidFilter
 from versatileimagefield.datastructures.sizedimage import MalformedSizedImageKey, SizedImage
@@ -39,13 +38,23 @@ from versatileimagefield.settings import (
     VERSATILEIMAGEFIELD_PLACEHOLDER_DIRNAME
 )
 from versatileimagefield.utils import (
-    get_filtered_filename, get_rendition_key_set, get_resized_filename, InvalidSizeKey, InvalidSizeKeySet
+    get_filtered_filename,
+    get_rendition_key_set,
+    get_resized_filename,
+    InvalidSizeKey,
+    InvalidSizeKeySet,
+    get_resized_path
 )
 from versatileimagefield.validators import validate_ppoi_tuple
 from versatileimagefield.versatileimagefield import CroppedImage, InvertImage
 
 from .forms import VersatileImageTestModelForm, VersatileImageWidgetTestModelForm
-from .models import VersatileImageTestModel, VersatileImageTestUploadDirectoryModel, VersatileImageWidgetTestModel
+from .models import (
+    VersatileImageTestModel,
+    VersatileImageTestUploadDirectoryModel,
+    VersatileImageWidgetTestModel,
+    MaybeVersatileImageModel
+)
 from .serializers import VersatileImageTestModelSerializer
 
 
@@ -159,6 +168,39 @@ class VersatileImageFieldTestCase(VersatileImageFieldBaseTestCase):
             ) // len(h1)
         )
         self.assertEqual(rms, 0.0)
+
+    def test_field_can_be_null(self):
+        obj = MaybeVersatileImageModel(pk=34, name='foo')
+        obj.save()
+
+    def test_storage_fails_to_return_url(self):
+        """
+        This is a wonky test used to ensure 100% code coverge in utils.py.
+
+        We need to test that a storage.url call can hit an exception to trigger
+        resized_url = None in try/except
+        """
+        import types
+        from copy import deepcopy
+        from django.utils.six import BytesIO
+
+        def storage_url_fail(self, path):
+            if self.exists(path):
+                return path
+
+            raise Exception("Storage class returns exception because file does not exist.")
+
+        class SizedImageSubclass(SizedImage):
+            filename_key = 'test'
+
+            def process_image(self, image, image_format, save_kwargs, width, height):
+                return BytesIO()
+
+        _storage = deepcopy(self.jpg.image.field.storage)
+        _storage.url = types.MethodType(storage_url_fail, _storage)
+
+        s = SizedImageSubclass(self.jpg.image.name, _storage, True)
+        s['100x100']
 
     def test_check_storage_paths(self):
         """Ensure storage paths are properly set."""
@@ -276,6 +318,7 @@ class VersatileImageFieldTestCase(VersatileImageFieldBaseTestCase):
 
     def test_create_on_demand_boolean(self):
         """Ensure create_on_demand boolean is set appropriately."""
+        self.jpg.image.create_on_demand = False
         self.assertFalse(self.jpg.image.create_on_demand)
         self.jpg.image.create_on_demand = True
         self.assertTrue(self.jpg.image.create_on_demand)
@@ -486,31 +529,6 @@ class VersatileImageFieldTestCase(VersatileImageFieldBaseTestCase):
         )
         instance = form.save(commit=False)
         self.assertEqual(instance.optional_image_with_ppoi.name, '')
-
-    def test_versatile_image_file_descriptor(self):
-        """Ensure VersatileImageFileDescriptor works as intended."""
-        self.jpg.image = 'python-logo-2.jpg'
-        self.jpg.save()
-        self.assertEqual(
-            self.jpg.image.thumbnail['100x100'].url,
-            '/media/__sized__/python-logo-2-thumbnail-100x100-70.jpg'
-        )
-        self.jpg.image = 'python-logo.jpg'
-        self.jpg.save()
-        self.assertEqual(
-            self.jpg.image.thumbnail['100x100'].url,
-            '/media/__sized__/python-logo-thumbnail-100x100-70.jpg'
-        )
-        fieldfile_obj = self.jpg.image
-        del fieldfile_obj.field
-        self.jpg.image = fieldfile_obj
-        img_path = self.jpg.image.path
-        img_file = open(img_path, 'rb')
-        django_file = File(img_file)
-        self.jpg.image = django_file
-        with self.assertRaises(AttributeError):
-            x = VersatileImageFileDescriptor(self.jpg.image.name)
-            VersatileImageFileDescriptor.__get__(x)
 
     def test_versatile_image_field_picklability(self):
         """Ensure VersatileImageField instances can be pickled/unpickled."""
@@ -996,3 +1014,40 @@ class VersatileImageFieldTestCase(VersatileImageFieldBaseTestCase):
         image, save_kwargs = processor.preprocess_JPEG(image_info[0])
 
         self.assertEqual(image.mode, 'RGB')
+
+    def test_corrupt_file(self):
+        with open(
+            os.path.join(
+                os.path.dirname(upath(__file__)),
+                "test.png"
+            ),
+            'rb'
+        ) as fp:
+            # Anything which cannot be resized or thumbnailed, but checks out
+            # when only looking at basic header data
+            content = fp.read()[:100]
+
+        instance = VersatileImageTestModel()
+        instance.image.save(
+            'stuff.png',
+            ContentFile(content),
+            save=True,
+        )
+
+        instance.image.create_on_demand = True
+        with self.assertRaises((AttributeError, IOError, OSError)):
+            instance.image.thumbnail['200x200']
+
+        admin_url = reverse('admin:tests_versatileimagetestmodel_change', args=(instance.pk,))
+        response = self.client.get(admin_url)
+        response.render()
+        self.assertContains(
+            response,
+            '<label class="versatileimagefield-label">Currently</label>',
+        )
+        self.assertContains(
+            response,
+            '<a href="/media/stuff',
+        )
+
+        instance.image.delete(save=False)

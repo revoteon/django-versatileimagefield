@@ -10,10 +10,6 @@ django-versatileimagefield
     :target: https://coveralls.io/github/respondcreate/django-versatileimagefield?branch=master
     :alt: Coverage Status
 
-.. image:: https://img.shields.io/pypi/dm/django-versatileimagefield.svg?style=flat
-    :target: https://pypi.python.org/pypi/django-versatileimagefield/
-    :alt: Downloads
-
 .. image:: https://img.shields.io/pypi/v/django-versatileimagefield.svg?style=flat
     :target: https://pypi.python.org/pypi/django-versatileimagefield/
     :alt: Latest Version
@@ -50,12 +46,6 @@ Compatibility
 
 - `Django REST Framework <http://www.django-rest-framework.org/>`_:
 
-  - 2.3.14
-  - 2.4.4
-  - 3.0.x
-  - 3.1.x
-  - 3.2.x
-  - 3.3.x (NOTE: Django REST Framework 3.3.x is not compatible with Django<=1.6.x)
   - 3.4.x
   - 3.5.x
   - 3.6.x
